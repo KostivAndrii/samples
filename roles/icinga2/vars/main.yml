@@ -1,0 +1,23 @@
+---
+# vars file for icinga2-ansible-web2-ui
+__web_server_daemon_deb: apache2
+__web_server_daemon_rh: httpd
+
+pwd_alias: "{{ lookup('password', '/dev/null chars=ascii_letters,digits') }}"
+pwd_alias_u: "{{ lookup('password', '/dev/null chars=ascii_letters,digits') }}"
+
+# modules installaiton
+modules_dir: "/usr/share/icingaweb2/modules"
+
+# modules_list:
+#   - cube
+#   - toplevelview
+#   - businessprocess
+
+icinga2_db_user_privileges: INSERT,SELECT,UPDATE,DELETE,DROP,CREATE VIEW,INDEX,EXECUTE
+icinga2_web2_db_user_privileges: INSERT,SELECT,UPDATE,DELETE,DROP,CREATE VIEW,INDEX,EXECUTE
+icinga2_web2_mysql_schema: "/usr/share/doc/icingaweb2/schema/mysql.schema.sql"
+
+
+icinga2_conf_owner: icinga
+icinga2_conf_group: icinga

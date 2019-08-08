@@ -1,0 +1,5 @@
+---
+# vars file for mysql
+
+pwd_alias: "{{ lookup('password', '/dev/null chars=ascii_letters,digits') }}"
+pwd_alias_u: "{{ lookup('password', '/dev/null chars=ascii_letters,digits') }}"

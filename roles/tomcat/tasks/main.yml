@@ -1,0 +1,116 @@
+---
+# tasks file for tomcat
+
+- name: Ensure Java is installed for RedHat. java-1.{{ jdk_version | default(8) }}.0-openjdk
+  yum:
+    name: java-1.8.0-openjdk
+    state: present
+
+- name: Add group tomcat
+  group: name={{ tomcat_user }} state=present
+
+- name: Add user tomcat
+  user: name={{ tomcat_user }} group={{ tomcat_group }}
+
+- name: check tomcat folder if exist
+  stat:
+    path: "/opt/{{ tomcat_folder }}/"
+  register: tomcat_dir
+
+- name: tomcat | binary copying
+  copy:
+    src: "{{ tomcat_arch }}"
+    dest: "/opt/"
+    owner: root
+    mode: 0644
+  when: not online_tomcat
+
+- name: tomcat | binary download
+  get_url: 
+    url: "{{ tomcat_url }}"  
+    dest: "/opt/{{ tomcat_arch }}"
+  when: online_tomcat
+
+- name: Unarchive tomcat
+  unarchive:
+    src: "/opt/{{ tomcat_arch }}"
+    dest: "/opt"
+    remote_src: yes
+  when: not ( tomcat_dir.stat.exists and tomcat_dir.stat.isdir )
+
+- name: "ln -s /opt/apache-tomcat-{{ tomcat_version }} /opt/tomcat"
+  file:
+    src: "/opt/apache-tomcat-{{ tomcat_version }}/"
+    dest: "{{ tomcat_dest }}"
+    owner: "{{ tomcat_user }}"
+    group: "{{ tomcat_group }}"
+    state: link
+
+- name: chmod -R /opt/tomcat
+  file:
+    path: "{{ tomcat_dest }}"
+    owner: "{{ tomcat_user }}"
+    group: "{{ tomcat_group }}"
+    recurse: yes
+    state: directory
+
+# - name: copying service file
+#   template:
+#     src: tomcat.service.j2
+#     dest: "/etc/systemd/system/tomcat.service"
+#     owner: root
+#     group: root
+#     mode: 0644
+
+- name: copying service file
+  template:
+    src: tomcat.j2
+    dest: /etc/init.d/tomcat
+    owner: root
+    group: root
+    mode: 0755
+
+- name: coping tomcat/conf/ [ server.xml, context.xml ]
+  copy:
+    src: "{{ item.file }}"
+    dest: "{{ tomcat_dest }}{{ item.path}}"
+    owner: "{{ tomcat_user }}"
+    group: "{{ tomcat_group }}"
+    mode: 0600
+  loop:
+    - { file: server.xml, path: "/conf/" }
+    - { file: context.xml, path: "/webapps/manager/META-INF/" }
+
+- name: copying tomcat-users.xml
+  template: 
+    src: tomcat-users.xml.j2 
+    dest: "{{ tomcat_dest }}/conf/tomcat-users.xml"
+    owner: "{{ tomcat_user }}"
+    group: "{{ tomcat_group }}"
+    mode: 0600
+
+- name: coping tomcat/bin/setenv.sh
+  template:
+    src: setenv.sh.j2
+    dest: "{{ tomcat_dest }}/bin/setenv.sh"
+    owner: "{{ tomcat_user }}"
+    group: "{{ tomcat_group }}"
+    mode: 0755
+
+- name: "Delete folders {docs,examples,host-manager,ROOT}"
+  file:
+    path: "{{ tomcat_dest}}/webapps/{{ item }}"
+    state: absent
+  loop: [ docs, examples, host-manager ]
+#  loop: [ docs, examples, host-manager, ROOT ]
+
+- name: start & enable tomcat
+  service: name=tomcat state=started enabled=yes
+
+- name: ensure port is open
+  wait_for:
+    host: 0.0.0.0
+    port: 8080
+    delay: 1
+    state: started
+

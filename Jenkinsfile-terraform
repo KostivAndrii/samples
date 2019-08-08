@@ -1,0 +1,97 @@
+pipeline {
+    agent any
+/*    parameters {
+      string(defaultValue: "STAGE", description: 'What environment?', name: 'AWS_ENV')
+    } */
+    environment {
+        aws_key_name = 'aws-test-oregon'
+    }
+    stages {
+        stage ('Clone') {
+            steps {
+                git branch: 'develop', url: "https://github.com/KostivAndrii/hello-world-servlet.git"
+            }
+        }
+        stage('Provision infrastructure') {
+            steps {
+                dir('tf') {
+                    sh 'pwd'
+                    sh 'terraform init'
+                    sh 'terraform plan -var-file=vpc.tfvars -out=plan'
+                    // sh 'terraform destroy -auto-approve'
+                    sh 'terraform apply plan'
+                }
+            }
+        }
+        stage ('Create AWS') {
+            steps {
+                echo 'Creating environment in AWS and CM Tomcat there'
+                sh 'pwd'
+                sh 'ls -la'
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'AWS_JENKINS']]) {
+                    sh 'cd ./tf'
+                    sh 'pwd'
+                    sh 'ls -la'
+                    sh 'terraform init ./tf'
+                    sh 'terraform apply -var-file=vpc.tfvars'
+//                    sh 'python3 -u ./paramc.py -s=AWS-NATGW -a=BOTO -i=my_cfg.yaml -cf=ec2.yaml -cfk=ec2.yaml -s3=cf-yaml-s3-bucket'
+                }
+                timeout(5) {
+                    waitUntil {
+                       withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'AWS_JENKINS']]) {
+                           script {
+                             def StackStatus = sh (
+                                    label: 'GET_STACK_STATUS',
+                                    returnStdout: true,
+                                    script: 'aws cloudformation describe-stacks --query "Stacks[*].StackStatus" --output=text --stack-name AWS-NATGW').trim()
+                             echo StackStatus
+                             return (StackStatus == 'CREATE_COMPLETE');
+                           }
+                       }
+                    }
+                }
+//                waitUntil {    // some block }
+//                sh './aws_create.sh'
+            }
+        }
+        stage ('Launching Ansible with dynamic inventory') {
+            steps {
+                echo 'Appying CM'
+                sh 'pwd'
+                sh 'ls -la'
+/*                sshagent(['aws-test-oregon']) {
+                    sh "printenv | sort"
+                    sh 'pwd'
+                    sh './tunnel.sh'
+                    sh 'echo "Openning tunnel"'
+                }
+*/
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'AWS_JENKINS']]) {
+                    sshagent(['aws-test-oregon']) {
+                        ansiblePlaybook (
+                            colorized: true,
+//                            credentialsId: 'aws-test-oregon',
+                            disableHostKeyChecking: true,
+                            installation: 'Ansible',
+                            inventory: './hosts',
+                            limit: 'backend',
+                            playbook: './mysql.yaml'
+                        )
+                    }
+                }
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'AWS_JENKINS']]) {
+                    ansiblePlaybook (
+                        colorized: true,
+                        credentialsId: 'aws-test-oregon',
+                        disableHostKeyChecking: true,
+                        installation: 'Ansible',
+                        inventory: './inventory/ec2.py',
+                        limit: 'tag_VM_Tomcat:tag_VM_Zabbix',
+                        playbook: './site.yaml'
+                    )
+                }
+            }
+        }
+    }
+}
+

@@ -1,0 +1,23 @@
+---
+# defaults file for icinga2-ansible-web2-ui
+# https://www.linuxtechi.com/install-configure-icinga2-centos-7-rhel-7/
+# https://icinga.com/docs/icinga2/latest/doc/02-getting-started/
+# https://github.com/Icinga/ansible-playbooks
+
+
+icinga2_db: "icinga"
+icinga2_db_pass: "ifVaysRZTnV1fWj7qqjT$"
+icinga2_db_user: "icinga"
+icinga2_web_mysql_schema: "/usr/share/icinga2-ido-mysql/schema/mysql.sql"
+
+icinga2_ido_mysql_conf: "/etc/icinga2/features-available/ido-mysql.conf"
+
+icinga2_web2_db: "icingaweb"
+icinga2_web2_db_pass: "{{ icinga2_db_pass }}"
+icinga2_web2_db_user: "icingaweb"
+
+graphite_secret_key: "{{ icinga2_db_pass }}"
+graphite_time_zone: "Europe/Kiev"
+
+
+enablerepo: "base"

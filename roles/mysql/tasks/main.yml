@@ -1,0 +1,67 @@
+---
+# tasks file for mysql
+- set_fact:
+    mysql_password: "{{ pwd_alias }}$"
+
+- set_fact:
+    mysql_user_password: "1UIhjIgovdckR5m4OWri$"
+    # mysql_user_password: "{{ pwd_alias_u }}$"
+
+
+- name: Create instalation folder
+  file:
+    path: "/opt/distr/"
+    state: directory 
+
+- name: Install MySQL 5.7 repo
+  yum:
+    name: http://dev.mysql.com/get/mysql57-community-release-el7-8.noarch.rpm
+    state: present
+
+- name: Install MySQL 5.7
+  yum: pkg={{ item }}
+  with_items:
+    - mysql-community-server
+    - mysql-community-client
+    - MySQL-python
+
+- name: Start the MySQL service
+  service:
+    name: mysqld
+    state: started
+    enabled: true
+
+- name: Change mysql root password and keep track in and store it in /root/.my.cnf
+  shell: |
+    password_match=`awk '/A temporary password is generated for/ { print $NF }' /var/log/mysqld.log`
+    mysql -uroot -p$password_match --connect-expired-password -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_password }}'; flush privileges; "
+    echo "[client]
+    user=root
+    password={{ mysql_password }}" > /root/.my.cnf
+  args:
+    creates: /root/.my.cnf
+  register: change_temp_pass
+
+- name: Create a new database
+  mysql_db:
+    name: "{{ mysql_db }}"
+    state: present
+    collation: utf8_general_ci
+  when: mysql_db != "none"
+
+- name: Create a database user
+  mysql_user:
+    name: "{{ mysql_db }}"
+    password: "{{ mysql_user_password }}"
+    priv: "{{ mysql_db }}.*:ALL,GRANT"
+    state: present
+    host: '%'
+  register: db_echo
+  when: mysql_db != "none"
+
+- name: store {{ mysql_db }} userpassword /root/.my.cnf
+  shell: |
+    echo "[client{{ mysql_db }}]
+    user={{ mysql_db }}
+    password={{ mysql_user_password }}" >> /root/.my.cnf
+  when: (db_echo is succeeded) and (mysql_db != "none")

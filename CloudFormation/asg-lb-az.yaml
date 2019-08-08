@@ -1,0 +1,211 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Metadata:
+ AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      - 
+        Label: 
+          default: "General Configuration"
+        Parameters: 
+          - InstanceName
+          - InstanceType
+      - 
+        Label: 
+          default: "Availability Zones Configuration"
+        Parameters: 
+          - AWSRegion
+          - AvailabilityZones
+      - 
+        Label: 
+          default: "SSH key"
+        Parameters: 
+          - SSHKeyName
+
+Parameters:
+
+  InstanceName:
+    Description: Logical instance name seen in AWS console
+    Type: String
+    Default: ASG-Tomcat-Hello-World
+
+  InstanceType:
+    Description: Type of EC2 instance to launch
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+
+  AWSRegion:
+    Type: String
+    Default: eu-west-3
+
+  AvailabilityZones:
+    Type: CommaDelimitedList
+    Default: eu-west-3a, eu-west-3b, eu-west-3c
+
+  SSHKeyName:
+    Description: The EC2 Key Pair to allow SSH access to the instances
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Default: aws-test-oregon
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+
+Mappings:
+  RegionMap:
+    eu-west-3:
+      AMI: ami-0ebb3a801d5fb8b9b
+      
+Resources:
+
+#========================= AutoScalingGroup
+  ASGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      AvailabilityZones: !Ref AvailabilityZones
+      LaunchConfigurationName: !Ref LaunchConfig
+      MinSize: '1'
+      MaxSize: '4'
+      DesiredCapacity: '3'
+      LoadBalancerNames:
+        - !Ref ElasticLoadBalancer
+      Tags:
+        - Key: Type
+          Value: Prod
+          PropagateAtLaunch: 'true'
+        - Key: Name
+          Value: !Ref InstanceName
+          PropagateAtLaunch: 'true'
+
+#========================= Instance Configuration (LaunchConfiguration) 
+  LaunchConfig:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      ImageId: !FindInMap 
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - AMI
+      UserData: 
+        Fn::Base64: 
+          !Sub | 
+            #!/bin/bash -xe 
+            sudo -i 
+            yum -y update
+            yum-config-manager --enable rhui-REGION-rhel-server-extras
+            yum -y install docker git httpd
+            PrivatIP=`curl http://169.254.169.254/latest/meta-data/local-ipv4`
+            echo "Web Server with $PrivatIP" > /var/www/html/index.html
+            systemctl start docker
+            systemctl start httpd
+            systemctl enable docker
+            systemctl enable httpd
+            mkdir /root/git
+            cd /root/git
+            git clone --single-branch --branch develop https://github.com/KostivAndrii/hello-world-servlet.git
+            cd /root/git/hello-world-servlet/docker
+            sed -i "s/zabbix_client_ipv4/$PrivatIP/" setenv.sh
+            sed -i "s/tomcat_admin_username/admin/" tomcat-users.xml
+            sed -i "s/tomcat_admin_password/password/" tomcat-users.xml
+            docker run -p 8080:8080 -v $(pwd)/hello-world.war:/usr/local/tomcat/webapps/hello-world.war -v $(pwd)/tomcat-users.xml:/usr/local/tomcat/conf/tomcat-users.xml -v $(pwd)/context.xml:/usr/local/tomcat/webapps/manager/META-INF/context.xml tomcat:latest
+      SecurityGroups:
+        - !Ref InstanceSecurityGroup
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref SSHKeyName
+
+#========================= AutoScaling Policy Up/Down
+  WebServerScaleUpPolicy:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref ASGroup
+      Cooldown: '300'
+      ScalingAdjustment: '1'
+  WebServerScaleDownPolicy:
+    Type: 'AWS::AutoScaling::ScalingPolicy'
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref ASGroup
+      Cooldown: '300'
+      ScalingAdjustment: '-1'
+
+#========================= High/Low Alarm
+  CPUAlarmHigh:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: Scale-up if CPU > 80% for 5 minutes (300 sec)
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: '80'
+      AlarmActions:
+        - !Ref WebServerScaleUpPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref ASGroup
+      ComparisonOperator: GreaterThanThreshold
+  CPUAlarmLow:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmDescription: Scale-down if CPU <20% for 5 min (300 sec)
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: '20'
+      AlarmActions:
+        - !Ref WebServerScaleDownPolicy
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref ASGroup
+      ComparisonOperator: LessThanThreshold
+
+#========================= LoadBalancer
+  ElasticLoadBalancer:
+    Type: 'AWS::ElasticLoadBalancing::LoadBalancer'
+    Properties:
+      AvailabilityZones: !Ref AvailabilityZones
+      CrossZone: 'true'
+      Listeners:
+        - LoadBalancerPort: '80'
+          InstancePort: '8080'
+          Protocol: HTTP
+      HealthCheck:
+        Target: !Join 
+          - ''
+          - - 'HTTP:'
+            - '8080'
+            - /hello-world/
+        HealthyThreshold: '10'
+        UnhealthyThreshold: '5'
+        Interval: '20'
+        Timeout: '10'
+
+#========================= InstanceSecurityGroup
+  InstanceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable SSH access and HTTP access on the inbound port
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '8080'
+          ToPort: '8080'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+
+Outputs:
+  URL:
+    Description: The URL of the website
+    Value: !Join 
+      - ''
+      - - 'http://'
+        - !GetAtt 
+          - ElasticLoadBalancer
+          - DNSName

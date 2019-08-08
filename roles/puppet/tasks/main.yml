@@ -1,0 +1,177 @@
+hostnamectl set-hostname
+
+puppet cert generate puppet-srv.local --dns_alt_names=puppet-srv.local
+puppet cert generate $(hostname -f) --dns_alt_names=$(hostname -f),puppet
+
+# ==================== agent
+# [root@puppetA puppet]# cat /etc/puppetlabs/puppet/puppet.conf
+# # This file can be used to override the default puppet settings.
+# # See the following links for more details on what settings are available:
+# # - https://puppet.com/docs/puppet/latest/config_important_settings.html
+# # - https://puppet.com/docs/puppet/latest/config_about_settings.html
+# # - https://puppet.com/docs/puppet/latest/config_file_main.html
+# # - https://puppet.com/docs/puppet/latest/configuration.html
+# [main]
+#  certname = puppet-cl.local
+#  server = puppet-srv.local
+#  environment = production
+#  runinterval = 1h
+# [agent]
+#  environment = production
+# ======================== master
+# vi ../puppet/puppet.conf
+# # This file can be used to override the default puppet settings.
+# # See the following links for more details on what settings are available:
+# # - https://puppet.com/docs/puppet/latest/config_important_settings.html
+# # - https://puppet.com/docs/puppet/latest/config_about_settings.html
+# # - https://puppet.com/docs/puppet/latest/config_file_main.html
+# # - https://puppet.com/docs/puppet/latest/configuration.html
+# [master]
+# dns_alt_names = puppet-srv.local
+# vardir = /opt/puppetlabs/server/data/puppetserver
+# logdir = /var/log/puppetlabs/puppetserver
+# rundir = /var/run/puppetlabs/puppetserver
+# pidfile = /var/run/puppetlabs/puppetserver/puppetserver.pid
+# codedir = /etc/puppetlabs/code
+# [main]
+# certname = puppet-srv.local
+# server = puppet-srv.local
+# environment = production
+# runinterval = 1h
+
+# puppet agent -t
+
+# vi environments/production/manifests/site.pp
+# node 'puppet-cl.local' {
+#   include zabbixserver
+# }
+
+# vi environments/production/modules/zabbixserver/manifests/params.pp
+# class zabbixserver::params
+# {
+#   $baseurl            = "https://repo.zabbix.com/zabbix/3.5/rhel/7/x86_64/"
+#   $gpgkey             = "https://repo.zabbix.com/zabbix-official-repo.key"
+#   $zabbix_packages    = ["zabbix-server-mysql", "zabbix-agent", "zabbix-web-mysql", "zabbix-java-gateway", "httpd", "php" ]
+#   $mysqlpassword_root = 'Zabbix_2015'
+#   $zabbix_db_name     = 'zabbix'
+#   $zabbix_db_user     = 'zabbix'
+#   $zabbix_db_password = 'zabbix'
+#   $timezone           = 'Europe/Kiev'
+# }
+
+# vi environments/production/modules/zabbixserver/manifests/init.pp
+# class zabbixserver (
+#   $mysqlpassword_root = $zabbixserver::params::mysqlpassword_root,
+#   $zabbix_db_name     = $zabbixserver::params::zabbix_db_name,
+#   $zabbix_db_user     = $zabbixserver::params::zabbix_db_user,
+#   $zabbix_db_password = $zabbixserver::params::zabbix_db_password,
+# ) inherits zabbixserver::params
+# {
+#   notify { "Zabbix db name = $zabbix_db_name" : }
+#   notify { "Zabbix db user = $zabbix_db_user" : }
+#   notify { "Zabbix db password = $zabbix_db_password" : }
+#   notify { "Zabbix root password for mysql = $mysqlpassword_root" : }
+#   notify { "Zabbix packages = $zabbixserver::params::zabbix_packages" : }
+# }
+
+# vi environments/production/modules/zabbixserver/manifests/install.pp
+# class zabbixserver::install (
+#     $mysqlpassword       = $zabbixserver::params::mysqlpassword_root,
+#   ) inherits zabbixserver::params
+# {
+#   # notify {"zabbixserver::install $mysqlpassword ":}
+#   class {'::mysql::server':
+#     root_password           => $mysqlpassword,
+#     remove_default_accounts => true,
+#   }
+#   file { "zabbixserver-repository":
+#         path  => "/etc/yum.repos.d/zabbix.repo",
+#         owner => 'root',
+#         group => 'root',
+#         mode  => 'go+r,u+rw',
+#         content => template('zabbixserver/zabbix.repo.erb')
+#   }
+#   package {'epel-release':
+#     ensure => installed,
+#     require => [ Package["epel-release"],
+#                  Package["mariadb-server"]
+#                ]
+#   }
+#   service{'httpd':
+#     ensure     => 'running',
+#     enable     => true,
+#     hasrestart => true,
+#     hasstatus  => true,
+#     require    => Package['httpd','php'],
+#   }
+#   service{'zabbix-server':
+#     ensure     => 'running',
+#     enable     => true,
+#     hasrestart => true,
+#     hasstatus  => true,
+#     require    => Package[$zabbixserver::params::zabbix_packages],
+#   }
+# }
+
+# vi modules/zabbixserver/templates/zabbix.repo.erb
+# [Zabbix]
+# name=Zabbix
+# baseurl=<%= @baseurl %>
+# gpgcheck=1
+# gpgkey=<%= @gpgkey %>
+
+
+# MODIFY init.pp
+# vi environments/production/modules/zabbixserver/manifests/init.pp
+# class zabbixserver (
+#   $mysqlpassword_root = $zabbixserver::params::mysqlpassword_root,
+#   $zabbix_db_name     = $zabbixserver::params::zabbix_db_name,
+#   $zabbix_db_user     = $zabbixserver::params::zabbix_db_user,
+#   $zabbix_db_password = $zabbixserver::params::zabbix_db_password,
+# ) inherits zabbixserver::params
+# {
+#   class { '::zabbixserver::install':
+#     mysqlpassword       => $mysqlpassword_root,
+#   }
+#   notify { "Zabbix db name = $zabbix_db_name" : }
+#   notify { "Zabbix db user = $zabbix_db_user" : }
+#   notify { "Zabbix db password = $zabbix_db_password" : }
+#   notify { "Zabbix root password for mysql = $mysqlpassword_root" : }
+#   notify { "Zabbix packages = $zabbixserver::params::zabbix_packages" : }
+# }
+
+# puppet module install puppetlabs-mysql --version 10.0.0
+# puppet module install puppetlabs-apache --version 5.0.0
+
+# vi environments/production/modules/zabbixserver/manifests/configuremysql.pp
+# class zabbixserver::configuremysql  inherits zabbixserver
+# {
+#   # Install zabbix databases
+#   mysql::db { "$zabbix_db_name":
+#       user     => "$zabbix_db_user",
+#       password => "$zabbix_db_password",
+#       host     => 'localhost',
+#       grant    => ['ALL'],
+#   }
+#   # fill zabbix database
+#   exec { 'schema.sql':
+#     path    => '/usr/bin:/usr/sbin:/bin',
+#     command => "mysql -u $zabbix_db_user -p$zabbix_db_password $zabbix_db_name < /usr/share/doc/zabbix-server-mysql-2.4.7/create/schema.sql"
+#     onlyif  => "mysql -u $zabbix_db_user -p$zabbix_db_password $zabbix_db_name -e 'SHOW TABLES FROM $zabbix_db_name' | grep -c acknow"
+#     require => Mysql::Db["$zabbix_db_name"],
+#   }
+#   exec { 'image.sql':
+#     path    => '/usr/bin:/usr/sbin:/bin',
+#     command => "mysql -u $zabbix_db_user -p$zabbix_db_password $zabbix_db_name < /usr/share/doc/zabbix-server-mysql-2.4.7/create/schema.sql"
+#     unless  => "mysql -u $zabbix_db_user -p$zabbix_db_password $zabbix_db_name -e 'SHOW TABLES FROM $zabbix_db_name' | grep -c acknow"
+#     require => Exec['schema.sql'],
+#   }
+#   exec { 'schema.sql':
+#     path    => '/usr/bin:/usr/sbin:/bin',
+#     command => "mysql -u $zabbix_db_user -p$zabbix_db_password $zabbix_db_name < /usr/share/doc/zabbix-server-mysql-2.4.7/create/schema.sql"
+#     onlyif  => "mysql -u $zabbix_db_user -p$zabbix_db_password $zabbix_db_name -e 'SHOW TABLES FROM $zabbix_db_name' | grep -c acknow"
+#     require => Exec['image.sql'],
+#   }
+# }
+# sed -i "s/^allowed_hosts=127.0.0.1,::1/allowed_hosts=127.0.0.1,192.168.237.0\/24/" /etc/nagios/nrpe.cfg
+# sed -i "s/^dont_blame_nrpe=0/dont_blame_nrpe=1/" /etc/nagios/nrpe.cfg

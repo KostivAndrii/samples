@@ -1,0 +1,60 @@
+import groovy.json.JsonSlurper
+
+def getBuildVersion() {
+
+//    final API_KEY = 'AKCp5ccGXKgp571DUjg7FfjTru6n8DyEygjrGCkV5JHgjwBYYnzsyRPFuu8g5v244TdnoXbS4'
+    final API_KEY = 'AKCp5ccGT2x3evLXvGmtUTVnUq3toYqx4SR3ZeVrdvTdkY4T56V8edN6kEnNJjvNkhWTf7nn4'
+
+    def response = httpRequest customHeaders: [[name: 'X-JFrog-Art-Api', value: "${API_KEY}"],[name: 'content-type', value: 'text/plain']], httpMode: 'POST', requestBody: 'items.find({"repo":{"$match":"libs-*-local"},"path":{"$match":"com/geekcap/vmturbo/hello-world-servlet-example/*"},"name":{"$match":"*.war"}}).include("repo","name","path")', responseHandle: 'LEAVE_OPEN', url: 'http://artifactory:8081/artifactory/api/search/aql'
+    def json = new JsonSlurper().parseText(response.content).results.name
+    json.add("latest-RELEASE")
+    json.add("latest-SNAPSHOT")
+    return json
+}
+
+pipeline {
+    agent any
+    parameters {
+      credentials credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey', defaultValue: 'aws-test-oregon', description: '', name: 'awssshkey', required: true
+      choice(choices: getBuildVersion(), description: 'Choise artifact', name: 'release')
+      choice(name: 'DRY_RUN', choices: 'Yes\nNo', description: 'Do a dry run to grab parameters?')
+    }
+    stages {
+        stage("Deployment") {
+          when { expression { return params.DRY_RUN == 'No' } }
+            steps {
+/* 1.       echo ec2_IP=$ec2_IP > ec2_IP
+                def cmd = [ 'bash', '-c', 'aws ec2 describe-instances --query "Reservations[*].Instances[*].PublicIpAddress" --output=text --filter Name=tag:VM,Values=Tomcat'.toString()]
+                def ec2_IP = cmd.execute().text ${ec2_IP} */
+/* 2.                script {
+                    EC2_IP = sh ( returnStdout: true, script: 'aws ec2 describe-instances --query "Reservations[*].Instances[*].PublicIpAddress" --output=text --filter Name=tag:VM,Values=Tomcat').trim()
+                    env.EC2_IP = EC2_IP
+                } */
+// 3. sh label: '', returnStdout: true, script: 'aws ec2 describe-instances --query "Reservations[*].Instances[*].PublicIpAddress" --output=text --filter Name=tag:VM,Values=Tomcat'
+
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'AWS_JENKINS']]) {
+                    script {
+                      EC2_IP = sh (label: 'GET_AWS_IP', returnStdout: true, script: 'aws ec2 describe-instances --query "Reservations[*].Instances[*].PublicIpAddress" --output=text --filter Name=tag:VM,Values=Tomcat').trim()
+                      env.EC2_IP = EC2_IP
+                    }
+                }                
+                echo "EC2_IP: ${EC2_IP}"
+                echo "env.EC2_IP: ${env.EC2_IP}"
+//                sh "printenv | sort"
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'AWS_JENKINS']]) {
+                    sh 'python3 -u ./paramc.py -s=AWS-NATGW -a=VERIFY -i=my_cfg.yaml -cf=ec2.yaml -cfk=ec2.yaml -s3=cf-yaml-s3-bucket'
+                }
+                sh 'pwd'
+                sh 'ls -la'
+                sh './get_artifact.sh ${release}'
+            	sshagent([awssshkey]) {
+                    sh 'ssh -o "StrictHostKeyChecking no" ec2-user@${EC2_IP} sudo rm -rf /opt/tomcat/webapps/hello-world.war'
+                    sh 'scp ./hello-world.war ec2-user@${EC2_IP}:/home/ec2-user/'
+                    sh 'ssh ec2-user@${EC2_IP} sudo mv -f /home/ec2-user/hello-world.war /opt/tomcat/webapps/hello-world.war'
+                    sh 'ssh ec2-user@${EC2_IP} sudo chown tomcat: /opt/tomcat/webapps/hello-world.war'
+//            		    sh 'ssh ec2-user@${EC2_IP} sudo service tomcat restart'
+            	}
+            }
+        }
+    }
+}

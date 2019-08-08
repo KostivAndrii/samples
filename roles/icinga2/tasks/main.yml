@@ -1,0 +1,614 @@
+---
+# tasks file for icinga2-ansible-web2-ui
+- set_fact:
+    mysql_password: "{{ pwd_alias }}$"
+
+- name: Install MySQL 5.7 and Icinga2 repos
+  yum:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - http://dev.mysql.com/get/mysql57-community-release-el7-11.noarch.rpm
+    - https://packages.icinga.com/epel/icinga-rpm-release-7-latest.noarch.rpm
+
+- name: Install MySQL, httpd, epel and scl repos
+  yum:
+    name: "{{ item }}"
+  loop:
+    - epel-release
+    - centos-release-scl
+    - mysql-community-server
+    - mysql-community-client
+    - MySQL-python
+    - httpd
+    - graphite-web
+    - python-carbon
+    - perl
+    - git
+    - libsemanage-python
+    - python-pip
+    - python-devel
+    - libffi-devel
+
+- name: pip install django django-tagging
+  pip:
+    name: "{{ item }}"
+  loop:
+    [ django, django-tagging===0.3.6 ]
+
+- name: graphite-web config file
+  template:
+    src: local_settings.py
+    dest: /etc/graphite-web/local_settings.py
+    owner: root
+    group: root
+    mode: 644
+
+- name: create data directory
+  file:
+    path: /etc/httpd/conf.d/graphite/
+    state: directory
+
+- name: graphite-web apache config
+  copy:
+    src: graphite-web.conf
+    dest: /etc/httpd/conf.d/graphite/graphite-web.conf
+    owner: root
+    group: root
+    mode: 644
+
+- name: initialize graphite-web database
+  command: /usr/bin/graphite-manage syncdb --noinput
+  args:
+    creates: /var/lib/graphite-web/graphite.db
+
+- name: build graphite  index
+  command: /usr/bin/graphite-build-index
+  args:
+    creates: /var/lib/graphite-web/index
+
+- name: chown the sqlite database to apache.apache
+  file:
+    path: /var/lib/graphite-web/
+    owner: apache
+    group: apache
+    recurse: yes
+
+- name: Start the MySQL and httpd service
+  service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - mysqld
+    - httpd
+    - carbon-cache
+
+- name: Change mysql root password and keep track in and store it in /root/.my.cnf
+  shell: |
+    password_match=`awk '/A temporary password is generated for/ { print $NF }' /var/log/mysqld.log`
+    mysql -uroot -p$password_match --connect-expired-password -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_password }}'; flush privileges; "
+    echo "[client]
+    user=root
+    password={{ mysql_password }}" > /root/.my.cnf
+  args:
+    creates: /root/.my.cnf
+  register: change_temp_pass
+
+# - debug:
+#     msg: "MySQL root password {{ mysql_password }}"
+
+- name: Install PHP
+  yum:
+    name: "{{ item }}"
+  loop:
+    - rh-php71-php-mysqlnd
+    - rh-php71-php-cli
+    - php-Icinga
+    - rh-php71-php-common
+    - rh-php71-php-fpm
+    - rh-php71-php-pgsql
+    - rh-php71-php-ldap
+    - rh-php71-php-intl
+    - rh-php71-php-xml
+    - rh-php71-php-gd
+    - rh-php71-php-pdo
+    - rh-php71-php-mbstring
+
+# - name: Find out timezone
+#   slurp:
+#      src: /etc/localtime
+#   register: etc_localtime
+
+- name: Timezone in php.ini
+  lineinfile:
+    path: /etc/opt/rh/rh-php71/php.ini
+    regexp: '^;?date.timezone ='
+    line: 'date.timezone = Europe/Kiev'
+
+- name: Install icinga2
+  yum:
+    name: "{{ item }}"
+  loop:
+    - icinga2
+    - icinga2-ido-mysql
+    - icingaweb2
+    - icingacli
+    - nagios-plugins-all
+    - nagios-plugins-nrpe
+    - icingaweb2-selinux
+    - icinga2-selinux
+
+- import_tasks: icinga2_web2_create_databases.yml
+
+- name: Start the icinga2 and rh-php71-php-fpm service
+  service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - icinga2
+    - rh-php71-php-fpm
+
+- name: restart httpd
+  service:
+    name: "{{ item }}"
+    state: restarted
+    enabled: yes
+  loop:
+    - httpd
+    - carbon-cache
+
+- name: Get setup token.
+  shell: 'icingacli setup token create | sed "s/.*token is: \(.*\)/\1/g"'
+  register: setup_token
+
+- name: Enable icinga2 feature perfdata graphite
+  icinga2_feature:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - perfdata
+    - graphite
+
+- name: clone icingaweb2-module-graphite
+  git:
+    repo: https://github.com/Icinga/icingaweb2-module-graphite.git
+    dest: /usr/share/icingaweb2/modules/graphite
+
+- name: restart icinga2
+  service:
+    name: icinga2
+    state: restarted
+
+- name: create graphite modules config directory
+  file:
+    path: /etc/icingaweb2/modules/graphite/
+    state: directory
+    owner: apache
+    group: icingaweb2
+    mode: '0770'
+
+- name: icingaweb2-module-graphite config file
+  template:
+    src: config.ini
+    dest: /etc/icingaweb2/modules/graphite/config.ini
+    owner: apache
+    group: icingaweb2
+    mode: '0660'
+
+- name: Icinga Web2 Installation finished
+  debug:
+    msg: "The WebUI token is {{ setup_token.stdout }}, us it at http://{{ ansible_host }}/icingaweb2/setup to continue the installation"
+
+- debug:
+    msg: "MySQL root password {{ mysql_password }}"
+
+- debug:
+    msg: "MySQL icinga/icingaweb password {{ icinga2_db_pass }}"
+
+- name: create /var/www/html/index.html
+  file:
+    path: /var/www/html/index.html
+    state: touch
+    mode: '0755'
+
+# touch /var/www/html/index.html
+# chmod 755 /var/www/html/index.html
+# icinga2 feature enable api
+# icinga2 api setup
+# systemctl restart icinga2
+# cat /etc/icinga2/conf.d/api-users.conf
+# sed -i 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config
+# getenforce
+# setenforce 0
+# ========================================================================================
+# icinga2 daemon -C - check icinga2 config
+# systemctl reload icinga2
+# icinga2 object list --type CheckCommand --name nrpe
+# ========================================================================================
+
+# icinga2 feature list
+# icinga2 feature enable perfdata graphite
+# cd /usr/share/icingaweb2/modules/
+# git clone https://github.com/Icinga/icingaweb2-module-graphite graphite
+# systemctl restart icinga2
+# https://www.linuxtechi.com/install-configure-icinga2-centos-7-rhel-7/
+
+# /usr/bin/graphite-manage syncdb --noinput
+# ls -la /var/lib/graphite-web/graphite.db
+# /usr/bin/graphite-build-index
+# chown -R apache:apache /var/lib/graphite-web/
+# systemctl restart carbon-cache
+# systemctl restart httpd
+
+
+# vi /etc/icinga2/conf.d/template.conf
+# template Host "P1" {
+#   import "generic-host"
+#   max_check_attempts = 3
+#   check_interval = 1m
+#   retry_interval = 30s
+#   /* select image from folder - /usr/share/icingaweb2/public/img */
+#   icon_image = "save.png"
+
+#   check_command = "hostalive"
+# }
+
+# template Host "P2" {
+#   import "generic-host"
+#   max_check_attempts = 4
+#   check_interval = 5m
+#   retry_interval = 30s
+#   icon_image = "service.png"
+
+#   check_command = "hostalive"
+# }
+
+# template Host "P3" {
+#   import "generic-host"
+#   max_check_attempts = 5
+#   check_interval = 15m
+#   retry_interval = 30s
+#   icon_image = "json.png"
+
+#   check_command = "hostalive"
+# }
+
+# template Service "service_P1" {
+#   max_check_attempts = 4
+#   check_interval = 2m
+#   retry_interval = 30s
+#   icon_image = "success_petrol.png"
+# }
+
+# template Service "service_P2" {
+#   max_check_attempts = 3
+#   check_interval = 10m
+#   retry_interval = 30s
+#   icon_image = "success.png"
+# }
+
+# template Service "service_P3" {
+#   max_check_attempts = 2
+#   check_interval = 20m
+#   retry_interval = 30s
+#   icon_image = "pdf.png"
+# }
+
+# /etc/icinga2/conf.d/services.conf
+# apply Service "check memory usage" {
+#     import "generic-service"
+#     icon_image = "service.png"
+#     check_command = "check_mem"
+
+#     assign where host.vars.mem
+# }
+
+# apply Service "check nrpe" {
+#     import "generic-service"
+#     icon_image = "service.png"
+#     check_command = "check_nrpe"
+
+#     assign where host.vars.nrpe
+# }
+
+# apply Service "check service status" {
+#     import "generic-service"
+#     check_command = "check_serv"
+
+#     assign where host.vars.serv
+# }
+
+# apply Service "service_P1" {
+#   import "service_P1"
+#   check_command = "ssh"
+
+#   assign where host.vars.servP == "P1"
+# }
+
+# apply Service "service_P2" {
+#   import "service_P2"
+#   check_command = "ssh"
+
+#   assign where host.vars.servP == "P2"
+# }
+
+# apply Service "service_P3" {
+#   import "service_P3"
+
+#   check_command = "ssh"
+
+#   assign where host.vars.servP == "P3"
+# }
+
+# /etc/icinga2/conf.d/hosts.conf
+# # object Host NodeName {
+#    vars.serv = "\"httpd sshd\""
+#    vars.nrpe = "check_load"
+# object Host "icinga2client"  {
+#   import "P3"
+#   address = "192.168.237.106"
+# #  vars.serv = "httpd sshd postfix"
+#   vars.serv = "\"httpd sshd postfix\""
+#   vars.nrpe = "check_load"
+#   vars.mem = "yes"
+#   vars.os = "Linux"
+#   vars.servP = "P3"
+#   vars.http_vhosts["http"] = {
+#     http_uri = "/"
+#   }
+#   vars.disks["disk"] = {
+#   }
+#   vars.disks["disk /"] = {
+#     disk_partitions = "/"
+#   }
+#   vars.notification["mail"] = {
+#     groups = [ "icingaadmins" ]
+#   }
+# }
+
+# object Service "http_icinga2c"  {
+#   max_check_attempts = 3
+#   check_interval = 10m
+#   retry_interval = 30s
+#   host_name = "icinga2client"
+#   check_command = "http"
+# }
+
+# object Service "ssh_icinga2c"  {
+#   max_check_attempts = 2
+#   check_interval = 20m
+#   retry_interval = 30s
+#   host_name = "icinga2client"
+#   check_command = "ssh"
+# }
+
+# /etc/icinga2/conf.d/commands.conf
+# object CheckCommand "check_serv" {
+#   command = [ PluginDir + "/check_nrpe", "-H", "$address$", "-c", "check_serv", "-a", "$serv$" ]
+# }
+
+# object CheckCommand "check_nrpe" {
+#   command = [ PluginDir + "/check_nrpe", "-H", "$address$", "-c", "$nrpe$" ]
+# }
+
+# object CheckCommand "check_mem" {
+#   command = [ PluginDir + "/check_nrpe", "-H", "$address$", "-c", "check_mem" ]
+# }
+# ============================================ custom check_serv script ==============
+# vi /usr/lib64/nagios/plugins/check_serv
+# #!/bin/bash
+
+# serv=$1
+# echo "Check service(s):  $serv"
+# check_status=0
+
+# for var in $serv
+# do
+#     active_status=$(/bin/systemctl is-active $var)
+#     enabled_status=$(/bin/systemctl is-enabled $var)
+
+#     if [[ $active_status == "active" && $enabled_status == "enabled" && check_status -eq 0 ]]; then
+#                 echo "OK - $var service status"
+#                 check_status=0
+#         elif [[ $active_status == "active" && $enabled_status != "enabled" && check_status -le  1 ]]; then
+#                 echo "WARNING - $var service status"
+#                 check_status=1
+#         elif [[ $active_status != "active" && check_status -le  2 ]]; then
+#                 echo "CRITICAL - $var service status"
+#                 check_status=2
+#         else
+#                 echo "UNKNOWN - $var : $active_status $enabled_status"
+#                 check_status=3
+#     fi
+# done
+
+# case "$check_status" in
+#     0) exit 0 ;;
+#     1) exit 1 ;;
+#     2) exit 2 ;;
+#     3) exit 3 ;;
+# esac
+# ============================================ custom check_mem script ==============
+# vi /usr/lib64/nagios/plugins/check_mem
+# #!/bin/bash
+
+# warn=$2
+# critical=$4
+
+# total=$(vmstat -s | sed -n 's/^ *\(.*\) K total memory.*/\1/p')
+# used=$(vmstat -s | sed -n 's/^ *\(.*\) K used memory.*/\1/p')
+
+# (( total /= 1000 ))
+# (( used /= 1000 ))
+
+# cr_m=$(($total * $critical / 100))
+# wr_m=$(($total * $warn / 100))
+
+# echo "Total MEM: $total M, used MEM: $used M, critical $cr_m M, warn $wr_m M"
+
+# if [[ $used -lt $wr_m ]]; then
+#                 echo "OK - memory usage |memory=$used;$wr_m;$cr_m;0"
+#                 exit 0
+#         elif [[ $used -lt $cr_m ]]; then
+#                 echo "WARNING - memory usage |memory=$used;$wr_m;$cr_m;0"
+#                 exit 1
+#         else
+#                 echo "CRITICAL - memory usage |memory=$used;$wr_m;$cr_m;0"
+#                 exit 2
+# fi
+# ==========================  API install / config
+# icinga2 feature list
+# icinga2 feature enable api
+# icinga2 api setup
+# systemctl restart icinga2
+# finish configure backend API: configuration/modules/monitoring/backends/command transport
+# use API Username/API Password from cat /etc/icinga2/conf.d/api-users.conf 
+# ====================== install client ==========
+# yum install -y epel-release nrpe nrpe-selinux nagios-plugins-all
+# listn on port 5666 for incoming commnad
+# vi /etc/nagios/nrpe.cfg
+# allowed_hosts=127.0.0.1,192.168.237.0/24
+# dont_blame_nrpe=1
+# command[check_serv]=/usr/lib64/nagios/plugins/check_serv $ARG1$
+# command[check_mem]=/usr/lib64/nagios/plugins/check_mem -w 5 -c 10
+# systemctl start nrpe ; systemctl enable nrpe
+# systemctl enable nrpe
+
+# yum install -y httpd ; systemctl start httpd ; systemctl enable httpd ; touch /var/www/html/index.html ; chmod 755 /var/www/html/index.html
+# ===================================================    client install ==============
+
+# yum install https://packages.icinga.com/epel/icinga-rpm-release-7-latest.noarch.rpm
+# yum install icinga2
+# yum install epel-release
+# yum install nagios-plugins-all
+# # RHEL sudo rpm -Uvh https://dl.fedoraproject.org/pub/epel/7/x86_64/Packages/e/epel-release-7-11.noarch.rpm
+# # RHEL subscription-manager repos --enable rhel-7-server-optional-rpms
+# yum install icinga2-selinux
+# icinga2 node wizard
+
+# ==========================  director install / config
+# username = "director"
+# password = "ifVaysRZTnV1fWj7qqjT$"
+
+# CREATE DATABASE director CHARACTER SET 'utf8'; GRANT ALL ON director.* TO director@localhost IDENTIFIED BY 'ifVaysRZTnV1fWj7qqjT$';
+# yum install -y git
+
+# mkdir -p /usr/share/icingaweb2/modules
+# cd /usr/share/icingaweb2/modules
+# sudo git clone https://github.com/Icinga/icingaweb2-module-director.git director
+
+# vi /etc/icingaweb2/resources.ini
+# [Director DB]
+# type = "db"
+# db = "mysql"
+# host = "localhost"
+# dbname = "director"
+# username = "director"
+# password = "ifVaysRZTnV1fWj7qqjT$"
+# charset = "utf8"
+
+# vi /etc/icinga2/conf.d/api-users.conf
+# object ApiUser "director" {
+#   password = "ifVaysRZTnV1fWj7qqjT$"
+#   permissions = [ "*" ]
+# }
+# ================== How to pass string with spaces to nrpe:
+# 1. /usr/lib64/nagios/plugins/check_nrpe -H 192.168.237.106 -c check_serv -a '"httpd sshd postfix"'
+# 2. object Host "icinga2client"  {
+#      vars.serv = "\"httpd sshd postfix\""
+#   object CheckCommand "check_serv" {
+#     command = [ PluginDir + "/check_nrpe", "-H", "$address$", "-c", "check_serv", "-a", "$serv$" ]
+#   }
+#???   command[check_serv]=/usr/lib64/nagios/plugins/check_serv $ARG1$ $ARG2$
+# ================== How to pass string with spaces to nrpe:
+#  /usr/lib64/nagios/plugins/check_nrpe -h
+# /usr/lib64/nagios/plugins/check_nrpe -H 192.168.237.106 -c check_load
+# OK - load average: 0.00, 0.01, 0.04|load1=0.000;0.150;0.300;0; load5=0.010;0.100;0.250;0; load15=0.040;0.050;0.200;0;
+# ./check_procs -w 150 -c 200
+# PROCS OK: 96 processes | procs=96;150;200;0;
+# install check_nrpe pluging for icinga2
+# yum install nagios-plugins-nrpe
+
+# icinga2 daemon -C - check icinga2 config
+# systemctl reload icinga2
+# icinga2 object list --type CheckCommand --name nrpe
+# systemctl start nrpe
+# systemctl enable nrpe
+
+# yum install -y httpd ; systemctl start httpd ; systemctl enable httpd ; touch /var/www/html/index.html ; chmod 755 /var/www/html/index.html
+# systemctl start httpd
+# systemctl enable httpd
+# touch /var/www/html/index.html
+# chmod 755 /var/www/html/index.html
+
+# /etc/icinga2/conf.d/commands.conf
+# object CheckCommand "check_serv" {
+#   command = [ PluginDir + "/check_nrpe", "-H", "$address$", "-c", "check_serv", "-a", "$serv$" ]
+# }
+# /etc/nagios/nrpe.cfg
+# dont_blame_nrpe=1
+# command[check_serv]=/usr/lib64/nagios/plugins/check_serv $ARG1$
+
+# object Host "icinga2client"  {
+#   import "P3"
+#   address = "192.168.237.106"
+#   vars.serv = "\"httpd sshd postfix\""
+#   vars.nrpe = "check_load"
+# ========================================================================================
+# icinga2 daemon -C - check icinga2 config
+# systemctl reload icinga2
+# icinga2 object list --type CheckCommand --name nrpe
+# ========================================================================================
+# yum install -y https://yum.puppet.com/puppet6-release-el-7.noarch.rpm
+# SSS: yum -y install puppetserver ntp ntpdate
+# AAA: yum -y install puppet-agent ntp ntpdate
+# ntpdate pool.ntp.org; timedatectl set-timezone Europe/Kiev; systemctl start ntpd; systemctl enable ntpd
+# sed -i 's/^SELINUX=.*/SELINUX=permissive/g' /etc/selinux/config ; setenforce 0
+# setenforce 0
+
+# vi ~/.bash_profile
+# export PATH=/opt/puppetlabs/bin:$PATH
+# source ~/.bash_profile
+
+# vi /etc/hosts
+# 192.168.237.105 puppet-srv.local
+# 192.168.237.106 puppet-cl.local
+# 192.168.237.107 puppet-cl2.local
+
+# vi /etc/puppetlabs/puppet/puppet.conf
+# [master]
+# dns_alt_names = puppet-srv.local
+# vardir = /opt/puppetlabs/server/data/puppetserver
+# logdir = /var/log/puppetlabs/puppetserver
+# rundir = /var/run/puppetlabs/puppetserver
+# pidfile = /var/run/puppetlabs/puppetserver/puppetserver.pid
+# codedir = /etc/puppetlabs/code
+# [main]
+# certname = puppet-srv.local
+# server = puppet-srv.local
+# environment = production
+# runinterval = 1h
+
+# AAA:
+# [main]
+#  certname = puppet-cl.local
+#  server = puppet-srv.local
+#  environment = production
+#  runinterval = 1h
+# AAA:
+# SERVER:
+# systemctl start puppetserver; systemctl enable puppetserver
+# puppet resource service puppet ensure=running enable=true
+# # systemctl enable puppetserver
+# # systemctl status puppetserver
+
+# puppetserver ca setup
+# puppetserver ca list
+# AAA: puppet agent --test
+# puppetserver ca sign --all
+# # puppetserver ca sign --certname puppet-cl.local
+# S:
+# puppet module install stahnma-epel --version 1.3.1
+# puppet module install puppetlabs/ntp

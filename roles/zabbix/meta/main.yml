@@ -1,0 +1,5 @@
+---
+dependencies:
+  - role: mysql
+    vars:
+      mysql_db: zabbix

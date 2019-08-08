@@ -1,0 +1,17 @@
+[Unit]
+Description=Apache Tomcat Web Application Container
+After=syslog.target network.target
+
+[Service]
+User={{ tomcat_user }}
+Group={{ tomcat_group }}
+Type=forking
+Environment=CATALINA_PID={{ tomcat_dest }}/tomcat.pid
+Environment=CATALINA_HOME={{ tomcat_dest }}
+Environment=CATALINA_BASE={{ tomcat_dest }}
+ExecStart={{ tomcat_dest }}/bin/startup.sh
+ExecStop={{ tomcat_dest }}/bin/shutdown.sh
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

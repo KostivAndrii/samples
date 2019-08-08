@@ -1,0 +1,4 @@
+---
+# vars file for tomcat
+
+mysql_db: "none"

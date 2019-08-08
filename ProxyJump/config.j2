@@ -1,0 +1,16 @@
+### jump server ###
+Host bastion
+    HostName {{ PublicIP }}
+    Port 22
+    User ec2-user
+    StrictHostKeyChecking no
+    ForwardAgent yes
+
+Host db
+    HostName {{ PrivatIP }}
+    ProxyJump bastion
+    Port 22
+    User ec2-user
+    StrictHostKeyChecking no
+    ForwardAgent yes
+

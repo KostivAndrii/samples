@@ -1,0 +1,327 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Metadata:
+ AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: "Network Configuration"
+        Parameters:
+          - Environment
+          - VPCBlock
+      -
+        Label:
+          default: "Subnets CIDR Blocks"
+        Parameters:
+          - PublicSubnetCIDR
+          - PrivateSubnetCIDR
+          - NATGWInstanceTypeParameter
+      -
+        Label:
+          default: "SSH key"
+        Parameters:
+          - KeyName
+
+
+Parameters:
+  Environment:
+    Type: String
+    Default: "PROD"
+  VPCBlock:
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Type: String
+    Default: '10.0.0.0/16'
+
+  PublicSubnetCIDR:
+    Type: String
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: '10.0.10.0/24'
+    Description: "Public Subnet CIDR"
+  PrivateSubnetCIDR:
+    Type: String
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-8]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-28
+    Default: '10.0.11.0/24'
+    Description: "Private Subnet CIDR"
+
+  KeyName:
+    Description: 'Optional key pair of the ec2-user to establish a SSH connection to the EC2 instance.'
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Default: 'aws-test-oregon'
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+
+  NATGWInstanceTypeParameter:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+    Description: Enter Instance Type for NAT GateWay. Default is t2.micro.
+
+Resources:
+
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      CidrBlock: !Ref VPCBlock
+      Tags:
+        - Key: Name
+          Value: !Ref Environment
+
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref Environment
+
+  GatewayAttachmentInternet:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+#==================================================== Public Subnet =========
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetCIDR
+      Tags:
+        - Key: Name
+          Value: !Join [ " ", [ !Ref Environment, "PublicSubnet" ] ]
+
+#====== Public RouteTables =========
+  PublicRouteTables:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join [ " ", [ !Ref Environment, "PublicRouteTables" ] ]
+
+#======= Routes for Public Subnet RouteTables with IGW
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref PublicRouteTables
+      GatewayId: !Ref InternetGateway
+    DependsOn:
+      - GatewayAttachmentInternet
+
+#====== Associate Public Route for Public Subnets
+  RouteAssociationPublicSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PublicRouteTables
+      SubnetId: !Ref PublicSubnet
+
+#==================================================== Privat Subnet =========
+  PrivatSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetCIDR
+      Tags:
+        - Key: Name
+          Value: !Join [ " ", [ !Ref Environment, "PrivatSubnet" ] ]
+
+#====== Privat RouteTables =========
+  PrivatRouteTables:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join [ " ", [ !Ref Environment, "PrivatRouteTables" ] ]
+
+#======= Routes for Privat Subnet RouteTables with IGW
+  PrivatRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref PrivatRouteTables
+#      GatewayId: !Ref InternetGateway
+      InstanceId: !Ref NATGWInstance
+    DependsOn:
+#      - GatewayAttachmentInternet
+      - NATGWInstance
+
+#====== Associate Privat Route for Public Subnets
+  RouteAssociationPrivatSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PrivatRouteTables
+      SubnetId: !Ref PrivatSubnet
+
+#====== NAT GW SecurityGroup
+  NATGWSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Allow access from SSH traffic and local traffic
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          CidrIp: !Ref VPCBlock
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Join [ " ", [ !Ref Environment, "NATGWSecurityGroup" ] ]
+
+#====== NAT GW instance
+  NATGWInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: !Ref NATGWInstanceTypeParameter
+      ImageId: !FindInMap
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - AMI
+      KeyName: !Ref KeyName
+      SourceDestCheck: false
+      Tags:
+        - Key: VM
+          Value: NATGW
+        - Key: Name
+          Value: !Join [ " ", [ !Ref Environment, "NATGW" ] ]
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref NATGWSecurityGroup
+          AssociatePublicIpAddress: 'true'
+          DeviceIndex: '0'
+          DeleteOnTermination: 'true'
+          SubnetId: !Ref PublicSubnet
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash -xe
+              #sed -i "s/net.ipv4.ip_forward = 0/net.ipv4.ip_forward = 1/" /etc/sysctl.conf
+              echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+              sysctl -p
+              echo "iptables -t nat -A POSTROUTING -s ${VPCCIDR} -j MASQUERADE" >> /etc/rc.local
+              iptables -t nat -A POSTROUTING -s ${VPCCIDR} -j MASQUERADE
+            - VPCCIDR: !Ref VPCBlock
+
+#====== Nested STECK with PublicServers (FrontEnd)
+
+  PublicServer:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.eu-west-3.amazonaws.com/cf-templates-1ldvye973texh-eu-west-3/20191600o4-tomcat-v.2.151q0r88wxjya
+#      TemplateURL: https://s3.eu-west-3.amazonaws.com/cf-templates-1ldvye973texh-eu-west-3/2019132zxS-tomcat-v.2.15nqofc8lky2
+#-      TemplateURL: https://s3.eu-west-3.amazonaws.com/cf-templates-1ldvye973texh-eu-west-3/2019132EtT-tomcat-v.2.169cpniu2tucc
+#+      TemplateURL: https://s3.eu-west-3.amazonaws.com/cf-templates-1ldvye973texh-eu-west-3/2019132sGl-tomcat-v2.17358iysj0op
+      TimeoutInMinutes: '60'
+      Parameters:
+        Environment:
+          Ref: Environment
+        KeyName:
+          Ref: KeyName
+        VPC:
+          Ref: VPC
+        VPCBlock:
+          Ref: VPCBlock
+        PublicSubnet:
+          Ref: PublicSubnet
+    DependsOn:
+      - PublicRoute
+
+  PrivatInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: t2.micro
+      ImageId: !FindInMap
+        - RegionMap
+        - !Ref 'AWS::Region'
+        - AMI
+      KeyName: !Ref KeyName
+      Tags:
+        - Key: VM
+          Value: BackEnd
+        - Key: Name
+          Value: !Join [ " ", [ !Ref Environment, "BackEnd" ] ]
+      NetworkInterfaces:
+        - GroupSet:
+            - !Ref NATGWSecurityGroup
+          DeviceIndex: '0'
+          DeleteOnTermination: 'true'
+          SubnetId: !Ref PrivatSubnet
+
+
+Outputs:
+  NATGWIP:
+    Description: Public IP address of the newly created EC2 instance
+    Value: !GetAtt
+      - NATGWInstance
+      - PublicIp
+  # BackEndIP:
+  #   Description: Public IP address of the newly created EC2 instance
+  #   Value: !GetAtt
+  #     - PrivatInstance
+  #     - LocalIp
+  NATGWDNS:
+    Description: Public DNSName of the newly created EC2 instance
+    Value: !GetAtt
+      - NATGWInstance
+      - PublicDnsName
+  NATGWInstanceId:
+    Description: InstanceId of the newly created EC2 instance
+    Value: !Ref NATGWInstance
+  StackRef:
+     Value: !Ref PublicServer
+  TomcatPublicIP:
+     Value: !GetAtt PublicServer.Outputs.PublicIP
+  TomcatPublicDNS:
+     Value: !GetAtt PublicServer.Outputs.PublicDNS
+  TomcatInstanceId:
+     Value: !GetAtt PublicServer.Outputs.InstanceId
+  ZabbixPublicIP:
+     Value: !GetAtt PublicServer.Outputs.ZabbixPublicIP
+  ZabbixPublicDNS:
+     Value: !GetAtt PublicServer.Outputs.ZabbixPublicDNS
+  ZabbixInstanceId:
+     Value: !GetAtt PublicServer.Outputs.ZabbixInstanceId
+
+Mappings:
+  RegionMap:
+    ap-south-1:
+      AMI: ami-0937dcc711d38ef3f
+    eu-west-3:
+      AMI: ami-0ebb3a801d5fb8b9b
+      # AMI: ami-0dd7e7ed60da8fb83
+    eu-north-1:
+      AMI: ami-6d27a913
+    eu-west-2:
+      AMI: ami-0664a710233d7c148
+    eu-west-1:
+      AMI: mi-030dbca661d402413
+    ap-northeast-2:
+      AMI: ami-018a9a930060d38aa
+    ap-northeast-1:
+      AMI: ami-0d7ed3ddb85b521a6
+    sa-east-1:
+      AMI: ami-0b04450959586da29
+    ca-central-1:
+      AMI: ami-0de8b8e4bc1f125fe
+    ap-southeast-1:
+      AMI: ami-04677bdaa3c2b6e24
+    ap-southeast-2:
+      AMI: ami-0c9d48b5db609ad6e
+    eu-central-1:
+      AMI: ami-0eaec5838478eb0ba
+    us-east-1:
+      AMI: ami-035be7bafff33b6b6
+    us-east-2:
+      AMI: ami-04328208f4f0cf1fe
+    us-west-1:
+      AMI: ami-0799ad445b5727125
+    us-west-2:
+      AMI: ami-032509850cf9ee54e
